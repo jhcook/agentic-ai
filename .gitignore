@@ -1,0 +1,15 @@
+# .gitignore for agentic-ai project
+#
+# This file specifies intentionally untracked files to ignore in this repository.
+# Files and directories listed here will not be committed to git.
+#
+# Common patterns:
+#   - __pycache__: Python bytecode cache directories
+#   - venv: Local Python virtual environment directory
+#   - log: Directory for application log files
+#   - .env: Environment variable definitions (contains secrets)
+
+__pycache__
+venv
+log
+.env

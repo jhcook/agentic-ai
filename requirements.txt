@@ -1,0 +1,7 @@
+# requires rust `brew install rust`
+litellm
+python-dotenv
+litellm[proxy]
+SpeechRecognition
+pyaudio
+python-json-logger
