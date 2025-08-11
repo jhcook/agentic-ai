@@ -5,3 +5,5 @@ litellm[proxy]
 SpeechRecognition
 pyaudio
 python-json-logger
+gnureadline
+#pyreadline3; platform_system == "Windows"
