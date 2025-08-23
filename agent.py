@@ -44,13 +44,12 @@ from http.client import RemoteDisconnected
 
 from functools import wraps
 
-from litellm import completion
-#from openai.error import OpenAIError
+from litellm import completion, Router, APIConnectionError
 from typing import List, Dict
 
 # Load environment variables from .env file
 load_dotenv()
-
+os.environ["OLLAMA_API_BASE"] = "http://localhost:11434"
 logger = logging.getLogger(__name__)
 
 @log_to_file()
@@ -106,19 +105,48 @@ def generate_response(messages: List[Dict]) -> str:
     Returns:
         str: The LLM's response content, or an error message if the call fails.
     """
-    try:
-        resp = completion(
-            model="gpt-4o-mini",
+    router = Router(model_list=[
+        {
+            "model_name": "ollama/gpt-oss:20b",
+            "litellm_params": {
+                "model": "ollama/gpt-oss:20b",
+                "api_key": "ollama",
+                "api_base": "http://localhost:11434",
+                "timeout": 300,
+                "stream_timeout": 300
+            }
+        }
+    ])
+    try: 
+        resp = router.completion(
+            model="ollama/gpt-oss:20b",
             messages=messages,
-            api_key=os.getenv("OPENAI_API_KEY")
+            api_key="ollama",
+            stream=True,
+            timeout=300
         )
-        try:
-            return resp.choices[0].message["content"]
-        except (AttributeError, TypeError, KeyError):
-            return resp["choices"][0]["message"]["content"]
-    
-    # except OpenAIError as e:
-    #     return f"OpenAI Error: {e}"
+        response_text = ""
+        for chunk in resp:
+            if isinstance(chunk, dict):
+                if not chunk.get("response") and chunk.get("thinking"):
+                    continue
+                content = chunk.get("response", "")
+                if content is None:
+                    content = ""
+            else:
+                try:
+                    content = chunk.choices[0].delta.get("content", "")
+                except AttributeError:
+                    content = chunk["choices"][0]["delta"].get("content", "")
+                if content is None:
+                    content = ""
+            print(content, end="", flush=True)
+            response_text += content
+        print()
+        return response_text
+    except APIConnectionError as e:
+        logger.error(f"APIConnectionError: {e}")
+        return f"APIConnectionError: {e}"
     except ValueError as e:
         return f"Value Error: {e}"
 
@@ -139,6 +167,7 @@ def main():
 
     messages = [
         {"role": "system", "content": f"you are {who_are_we}"},
+        {"role": "system", "content": "answer in on paragraph with no more than 5 sentences"},
         {"role": "user", "content": f"{what_is_the_problem}"}
     ]
 
