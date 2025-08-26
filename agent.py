@@ -52,14 +52,6 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 # Get the logger
 logger = logging.getLogger("agent")
 
-# Periodically flush the logger to ensure logs are written
-def flush_logger(interval: int = 5):
-    """Flush the logger every `interval` seconds."""
-    while True:
-        time.sleep(interval)
-        for handler in logger.handlers:
-            handler.flush()
-
 def parse_args():
     """
     Parse command-line arguments
