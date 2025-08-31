@@ -52,6 +52,9 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 # Get the logger
 logger = logging.getLogger("agent")
 
+# Are we streaming the LLM response?
+STREAM_RESPONSE = False
+
 def parse_args():
     """
     Parse command-line arguments
@@ -68,6 +71,8 @@ def parse_args():
                         required=False)
     parser.add_argument("--question", type=str, help="The question you are asking.",
                         required=False)
+    parser.add_argument("--stream", action='store_true',
+                        help="Stream the LLM response in real-time.", default=False)
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="Temperature for the LLM response.", required=False)
     return parser.parse_args()
@@ -162,8 +167,11 @@ def generate_response(messages: List[Dict]) -> str:
                 if content is None:
                     content = ""
             logger.debug(content)
+            if STREAM_RESPONSE:
+                print(content, end="", flush=True)
             response_text += content
-        print()
+        if STREAM_RESPONSE:
+            print()
         return response_text
     except APIConnectionError as e:
         logger.error(f"APIConnectionError: {e}")
@@ -191,6 +199,10 @@ def main():
     if args.model:
         global MODEL_NAME
         MODEL_NAME = args.model
+    
+    if args.stream:
+        global STREAM_RESPONSE
+        STREAM_RESPONSE = True
 
     if args.temperature is not None:
         global LLM_TEMPERATURE
@@ -226,7 +238,8 @@ def main():
     logging.debug(f"Messages: {messages}")
 
     response = generate_response(messages)
-    print(response)
+    if not STREAM_RESPONSE:
+        print(response)
 
 if __name__ == "__main__":
     try:
