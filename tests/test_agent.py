@@ -5,13 +5,17 @@ from contextlib import redirect_stdout
 from http.client import RemoteDisconnected
 from unittest.mock import MagicMock, patch
 
-import agent
+import cli
+import speech_service
+from llm_client import LLMClient
+from settings import LLMSettings
+from speech_service import listen_and_transcribe
 
 
 class ParseArgsTests(unittest.TestCase):
     def test_parse_args_defaults(self):
         with patch("sys.argv", ["agent.py"]):
-            args = agent.parse_args()
+            args = cli.parse_args()
 
         self.assertEqual(args.loglevel, "INFO")
         self.assertIsNone(args.model)
@@ -45,7 +49,7 @@ class ParseArgsTests(unittest.TestCase):
             "1.2",
         ]
         with patch("sys.argv", cli_args):
-            args = agent.parse_args()
+            args = cli.parse_args()
 
         self.assertEqual(args.loglevel, "DEBUG")
         self.assertEqual(args.model, "gpt-test")
@@ -65,23 +69,21 @@ class DummyChunk:
 
 class GenerateResponseTests(unittest.TestCase):
     def setUp(self):
-        router_patcher = patch("agent.Router")
+        router_patcher = patch("llm_client.Router")
         self.addCleanup(router_patcher.stop)
         self.mock_router_cls = router_patcher.start()
         self.mock_router = MagicMock()
         self.mock_router_cls.return_value = self.mock_router
 
-        logger_patcher = patch.object(agent, "logger", MagicMock())
-        self.addCleanup(logger_patcher.stop)
-        logger_patcher.start()
-
-        agent.MODEL_NAME = "gpt-test"
-        agent.LLM_TEMPERATURE = 0.25
-        agent.LLM_PROVIDER = "provider-x"
-        agent.LLM_API_KEY = "key-123"
-        agent.LLM_API_BASE = "https://example-base"
-        agent.LLM_TIMEOUT = 15
-        agent.STREAM_RESPONSE = False
+        config = LLMSettings(
+            model_name="gpt-test",
+            provider="provider-x",
+            api_key="key-123",
+            api_base="https://example-base",
+            temperature=0.25,
+            timeout=15,
+        )
+        self.client = LLMClient(config)
 
     def test_generate_response_concatenates_chunks_and_calls_router(self):
         messages = [{"role": "user", "content": "hello"}]
@@ -92,7 +94,7 @@ class GenerateResponseTests(unittest.TestCase):
             DummyChunk(None),
         ]
 
-        result = agent.generate_response(messages)
+        result = self.client.generate_response(messages)
 
         expected_params = {
             "model": "gpt-test",
@@ -115,7 +117,6 @@ class GenerateResponseTests(unittest.TestCase):
         self.assertEqual(result, "Hello world")
 
     def test_generate_response_prints_when_streaming_enabled(self):
-        agent.STREAM_RESPONSE = True
         messages = [{"role": "user", "content": "stream please"}]
         self.mock_router.completion.return_value = [
             {"response": "Hi"},
@@ -124,24 +125,26 @@ class GenerateResponseTests(unittest.TestCase):
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            result = agent.generate_response(messages)
+            result = self.client.generate_response(messages, stream=True)
 
         self.assertEqual(result, "Hi!")
         self.assertEqual(buffer.getvalue(), "Hi!\n")
 
     def test_generate_response_handles_api_connection_error(self):
-        self.mock_router.completion.side_effect = agent.APIConnectionError(
+        from litellm.exceptions import APIConnectionError
+
+        self.mock_router.completion.side_effect = APIConnectionError(
             "down", "provider-x", "gpt-test"
         )
 
-        result = agent.generate_response([{"role": "user", "content": "hello"}])
+        result = self.client.generate_response([{"role": "user", "content": "hello"}])
 
         self.assertIn("APIConnectionError", result)
 
     def test_generate_response_handles_value_error(self):
         self.mock_router.completion.side_effect = ValueError("bad params")
 
-        result = agent.generate_response([{"role": "user", "content": "hello"}])
+        result = self.client.generate_response([{"role": "user", "content": "hello"}])
 
         self.assertEqual(result, "Value Error: bad params")
 
@@ -157,8 +160,8 @@ class ListenAndTranscribeTests(unittest.TestCase):
         return source
 
     @patch("builtins.print")
-    @patch("agent.sr.Microphone")
-    @patch("agent.sr.Recognizer")
+    @patch("speech_service.sr.Microphone")
+    @patch("speech_service.sr.Recognizer")
     def test_listen_and_transcribe_success(self, mock_recognizer_cls, mock_microphone_cls, _mock_print):
         source = self._setup_microphone(mock_microphone_cls)
         mock_recognizer = MagicMock()
@@ -167,7 +170,7 @@ class ListenAndTranscribeTests(unittest.TestCase):
         mock_recognizer.listen.return_value = mock_audio
         mock_recognizer.recognize_google.return_value = "transcribed text"
 
-        result = agent.listen_and_transcribe("Say something")
+        result = listen_and_transcribe("Say something")
 
         self.assertEqual(result, "transcribed text")
         mock_recognizer.adjust_for_ambient_noise.assert_called_once_with(source)
@@ -175,23 +178,23 @@ class ListenAndTranscribeTests(unittest.TestCase):
         mock_recognizer.recognize_google.assert_called_once_with(mock_audio)
 
     @patch("builtins.print")
-    @patch("agent.sr.Microphone")
-    @patch("agent.sr.Recognizer")
+    @patch("speech_service.sr.Microphone")
+    @patch("speech_service.sr.Recognizer")
     def test_listen_and_transcribe_unknown_value_error(self, mock_recognizer_cls, mock_microphone_cls, _mock_print):
         self._setup_microphone(mock_microphone_cls)
         mock_recognizer = MagicMock()
         mock_recognizer_cls.return_value = mock_recognizer
         mock_recognizer.listen.return_value = MagicMock()
-        mock_recognizer.recognize_google.side_effect = agent.sr.UnknownValueError()
+        mock_recognizer.recognize_google.side_effect = speech_service.sr.UnknownValueError()
 
-        result = agent.listen_and_transcribe()
+        result = listen_and_transcribe()
 
         self.assertIsNone(result)
         self.assertEqual(mock_recognizer.recognize_google.call_count, 1)
 
     @patch("builtins.print")
-    @patch("agent.sr.Microphone")
-    @patch("agent.sr.Recognizer")
+    @patch("speech_service.sr.Microphone")
+    @patch("speech_service.sr.Recognizer")
     def test_listen_and_transcribe_retries_on_remote_disconnected(self, mock_recognizer_cls, mock_microphone_cls, _mock_print):
         self._setup_microphone(mock_microphone_cls)
         mock_recognizer = MagicMock()
@@ -203,7 +206,7 @@ class ListenAndTranscribeTests(unittest.TestCase):
             RemoteDisconnected("down"),
         ]
 
-        result = agent.listen_and_transcribe()
+        result = listen_and_transcribe()
 
         self.assertIsNone(result)
         self.assertEqual(mock_recognizer.recognize_google.call_count, 3)

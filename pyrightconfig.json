@@ -1,7 +1,11 @@
 {
   "include": [
     "agent.py",
+    "cli.py",
     "graph.py",
+    "llm_client.py",
+    "speech_service.py",
+    "settings.py",
     "utils.py",
     "tests"
   ],
