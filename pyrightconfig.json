@@ -1,0 +1,10 @@
+{
+  "include": [
+    "agent.py",
+    "graph.py",
+    "utils.py",
+    "tests"
+  ],
+  "venvPath": ".",
+  "venv": "venv"
+}

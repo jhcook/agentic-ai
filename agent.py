@@ -13,10 +13,25 @@ Features:
     - Sends the transcribed text to a language model (LLM) for generating a response.
     - Logs function calls, return values, and exceptions to a rotating log file.
     - Handles common errors gracefully, including audio recognition and remote disconnections.
+            
+usage: agent.py [-h] [--loglevel LOGLEVEL] [--model MODEL] [--provider PROVIDER] [--api-key API_KEY]
+                [--api-base API_BASE] [--who WHO] [--question QUESTION] [--stream]
+                [--temperature TEMPERATURE]
 
-Usage:
-    agent.py [-h] [--loglevel LOGLEVEL] [--model MODEL] [--who WHO] [--question QUESTION]
-             [--temperature TEMPERATURE]
+Agentic AI Command-Line Interface
+
+options:
+  -h, --help            show this help message and exit
+  --loglevel LOGLEVEL   Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  --model MODEL         The LLM model to use.
+  --provider PROVIDER   The LLM provider (e.g., openai, ollama, gemini).
+  --api-key API_KEY     API key to use for the LLM request.
+  --api-base API_BASE   Custom API base URL for the provider.
+  --who WHO             Who do you want to ask the question?
+  --question QUESTION   The question you are asking.
+  --stream              Stream the LLM response in real-time.
+  --temperature TEMPERATURE
+                        Temperature for the LLM response.
 
 Environment:
     - Requires a .env file with OPENAI_API_KEY or Ollama for LLM access.
@@ -40,14 +55,20 @@ from dotenv import load_dotenv
 import speech_recognition as sr
 from http.client import RemoteDisconnected
 
-from litellm import Router, APIConnectionError
-from typing import List, Dict
+from litellm.router import Router
+from litellm.exceptions import APIConnectionError
+from typing import Any, Iterable, List, Dict, Optional, cast
+
+sr = cast(Any, sr)
 
 # Load environment variables from .env file
 load_dotenv()
-os.environ["OLLAMA_API_BASE"] = "http://localhost:11434"
 MODEL_NAME = os.getenv("LLM_NAME")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+LLM_PROVIDER = os.getenv("LLM_PROVIDER")
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_API_BASE = os.getenv("LLM_API_BASE")
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "300"))
 
 # Get the logger
 logger = logging.getLogger("agent")
@@ -67,18 +88,24 @@ def parse_args():
                         required=False)    
     parser.add_argument("--model", type=str, help="The LLM model to use.",
                         required=False)
+    parser.add_argument("--provider", type=str, help="The LLM provider (e.g., openai, ollama, gemini).",
+                        required=False)
+    parser.add_argument("--api-key", type=str, help="API key to use for the LLM request.",
+                        required=False, dest="api_key")
+    parser.add_argument("--api-base", type=str, help="Custom API base URL for the provider.",
+                        required=False, dest="api_base")
     parser.add_argument("--who", type=str, help="Who do you want to ask the question?",
                         required=False)
     parser.add_argument("--question", type=str, help="The question you are asking.",
                         required=False)
     parser.add_argument("--stream", action='store_true',
                         help="Stream the LLM response in real-time.", default=False)
-    parser.add_argument("--temperature", type=float, default=0.0,
+    parser.add_argument("--temperature", type=float, default=None,
                         help="Temperature for the LLM response.", required=False)
     return parser.parse_args()
 
 @log_to_file()
-def listen_and_transcribe(message: str = "Please speak...") -> str:
+def listen_and_transcribe(message: str = "Please speak...") -> Optional[str]:
     """
     Listen to microphone input and transcribe speech to text.
 
@@ -93,7 +120,7 @@ def listen_and_transcribe(message: str = "Please speak...") -> str:
         sr.RequestError: If there is an API error with the recognition service.
         RemoteDisconnected: If the remote server disconnects.
     """
-    recognizer = sr.Recognizer()
+    recognizer = cast(Any, sr.Recognizer())
     mic = sr.Microphone()
 
     with mic as source:
@@ -130,40 +157,49 @@ def generate_response(messages: List[Dict]) -> str:
     Returns:
         str: The LLM's response content, or an error message if the call fails.
     """
+    if not MODEL_NAME:
+        raise ValueError("LLM model not configured. Set LLM_NAME in .env or pass --model.")
+
+    litellm_params = {
+        "model": MODEL_NAME,
+        "timeout": LLM_TIMEOUT,
+        "stream_timeout": LLM_TIMEOUT
+    }
+    if LLM_API_KEY:
+        litellm_params["api_key"] = LLM_API_KEY
+    if LLM_API_BASE:
+        litellm_params["api_base"] = LLM_API_BASE
+    if LLM_PROVIDER:
+        litellm_params["custom_llm_provider"] = LLM_PROVIDER
+
     router = Router(model_list=[
         {
             "model_name": MODEL_NAME,
-            "litellm_params": {
-                "model": MODEL_NAME,
-                "api_key": "ollama",
-                "api_base": "http://localhost:11434",
-                "timeout": 300,
-                "stream_timeout": 300
-            }
+            "litellm_params": litellm_params
         }
     ])
     try: 
-        resp = router.completion(
+        resp: Iterable[Any] = router.completion(
             model=MODEL_NAME,
             messages=messages,
-            api_key="ollama",
             stream=True,
-            timeout=300,
+            timeout=LLM_TIMEOUT,
             temperature=LLM_TEMPERATURE
         )
         response_text = ""
         for chunk in resp:
-            if isinstance(chunk, dict):
-                if not chunk.get("response") and chunk.get("thinking"):
+            chunk_data = cast(Any, chunk)
+            if isinstance(chunk_data, dict):
+                if not chunk_data.get("response") and chunk_data.get("thinking"):
                     continue
-                content = chunk.get("response", "")
+                content = chunk_data.get("response", "")
                 if content is None:
                     content = ""
             else:
                 try:
-                    content = chunk.choices[0].delta.get("content", "")
+                    content = chunk_data.choices[0].delta.get("content", "")
                 except AttributeError:
-                    content = chunk["choices"][0]["delta"].get("content", "")
+                    content = chunk_data["choices"][0]["delta"].get("content", "")
                 if content is None:
                     content = ""
             logger.debug(content)
@@ -189,6 +225,8 @@ def main():
 
     args = parse_args()
 
+    global MODEL_NAME, LLM_PROVIDER, LLM_API_KEY, LLM_API_BASE
+
     if args.loglevel:
         numeric_level = getattr(logging, args.loglevel.upper(), None)
         if isinstance(numeric_level, int):
@@ -197,18 +235,39 @@ def main():
             print(f"Invalid log level: {args.loglevel}")
     
     if args.model:
-        global MODEL_NAME
         MODEL_NAME = args.model
-    
+
+    if not MODEL_NAME:
+        raise ValueError("LLM model not configured. Set LLM_NAME in .env or pass --model.")
+
     if args.stream:
         global STREAM_RESPONSE
         STREAM_RESPONSE = True
 
     if args.temperature is not None:
         global LLM_TEMPERATURE
+        if not 0.0 <= args.temperature <= 2.0:
+            raise ValueError("Temperature must be between 0.0 and 2.0.")
         LLM_TEMPERATURE = args.temperature
 
-    logger.info(f"Using model: {MODEL_NAME} with temperature: {LLM_TEMPERATURE}")
+    if args.provider:
+        LLM_PROVIDER = args.provider
+    if args.api_key:
+        LLM_API_KEY = args.api_key
+    if args.api_base:
+        LLM_API_BASE = args.api_base or None
+
+    # Provide a sensible default for Ollama if the provider was specified but no base URL given
+    if (LLM_PROVIDER == "ollama") and not LLM_API_BASE:
+        LLM_API_BASE = "http://localhost:11434"
+
+    logger.info(
+        "Using model: %s with provider: %s, api_base: %s, temperature: %.2f",
+        MODEL_NAME,
+        LLM_PROVIDER or "auto",
+        LLM_API_BASE or "default",
+        LLM_TEMPERATURE,
+    )
 
     if not args.who:
         who_are_we = listen_and_transcribe("Who do you want to speak to?")
